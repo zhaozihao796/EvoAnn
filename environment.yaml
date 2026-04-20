@@ -1,0 +1,12 @@
+name: EvoAnn
+channels:
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - htslib
+  - pip:
+    - numpy
+    - biopython
+    - cyvcf2
