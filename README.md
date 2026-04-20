@@ -1,27 +1,24 @@
-================================================================================
-EvoAnn: Evolutionary Annotation Toolkit
-================================================================================
+# EvoAnn: Evolutionary Annotation Toolkit
 
-Welcome to EvoAnn! This directory contains the source code and essential 
-resources for running the software. EvoAnn operates as a unified command-line 
-tool, seamlessly integrated into your environment.
+Welcome to EvoAnn! This directory contains the source code and essential resources for running the software. EvoAnn operates as a unified command-line tool, seamlessly integrated into your environment.
 
---------------------------------------------------------------------------------
-1. DIRECTORY STRUCTURE
---------------------------------------------------------------------------------
-├── environment.yaml      # Conda environment dependencies file
-├── setup.py              # Python package installation script
-├── src/                  # Source code directory
-├── README.md             # This manual file
-├── LICENSE               # Terms of use (MIT License)
-└── test_data/            # Small empirical dataset for quick verification
+---
+
+## 1. DIRECTORY STRUCTURE
+
+```text
+├── environment.yaml  # Conda environment dependencies file
+├── setup.py          # Python package installation script
+├── src/              # Source code directory
+├── README.md         # This manual file
+├── LICENSE           # Terms of use (MIT License)
+└── test_data/        # Small empirical dataset for quick verification
     ├── test_ref.fa
     ├── test_anno.gff3
     └── test_pop.vcf.gz
+```
 
---------------------------------------------------------------------------------
-2. INSTALLATION
---------------------------------------------------------------------------------
+## 2. INSTALLATION
 EvoAnn manages its dependencies robustly via Conda and is installed as a 
 standard Python package.
 
@@ -37,9 +34,7 @@ Step 3: Install the package locally
 Once installed, the `evoann` command will be globally available in this Conda 
 environment.
 
---------------------------------------------------------------------------------
-3. QUICK TEST RUN (Sanity Check)
---------------------------------------------------------------------------------
+## 3. QUICK TEST RUN
 Before processing your own data, we highly recommend running the provided 
 test dataset to ensure EvoAnn is functioning correctly on your system.
 
@@ -50,10 +45,7 @@ Ensure your Conda environment is activated, then run:
 If successful, you will see a `test_out/` directory containing the type-stratified 
 results and the interactive HTML summary.
 
---------------------------------------------------------------------------------
-4. QUICK START & EXAMPLES
---------------------------------------------------------------------------------
-
+## 4. QUICK START & EXAMPLES
 EvoAnn operates using a unified CLI with specific subcommands. Below are the 
 most common use cases.
 
