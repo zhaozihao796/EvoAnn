@@ -11,11 +11,11 @@ class CDSExtractor:
         self.fasta_file = fasta_file
         self.fasta_dict = {}
 
-        self.cds_by_mrna = {}  # {mrna_id: [(start, end, strand, chrom, phase), ...]}
-        self.mrna_by_gene = {}  # {gene_id: [mrna_id1, mrna_id2, ...]}
-        self.chrom_map = {}  # {gene_id: chrom}
+        self.cds_by_mrna = {}
+        self.mrna_by_gene = {}
+        self.chrom_map = {}
 
-        self.transcripts = {}  # {(gene_id, mrna_id): seq}
+        self.transcripts = {}
 
     def load_data(self):
         logger.info("Parsing GFF file...")

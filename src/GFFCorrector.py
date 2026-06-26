@@ -47,8 +47,8 @@ class GFFCorrector:
         self.output_gff = output_gff
 
         self.headers = []
-        self.genes: Dict[str, GFFFeature] = {}  # gene_id -> GeneFeature
-        self.mrnas: Dict[str, GFFFeature] = {}  # mrna_id -> mRNAFeature
+        self.genes: Dict[str, GFFFeature] = {}
+        self.mrnas: Dict[str, GFFFeature] = {}
 
         self.mrna_children: Dict[str, Dict[str, List[GFFFeature]]] = {}
 

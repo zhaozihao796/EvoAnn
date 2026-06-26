@@ -219,13 +219,6 @@ def create_parser():
 
     subparsers = parser.add_subparsers(dest='command', metavar='COMMAND', help=argparse.SUPPRESS)
 
-    # common = parser.add_argument_group('Common Arguments (used in subcommands)')
-    # common.add_argument('-v, --vcf', help='Input VCF file (bgzipped & indexed).', action='store_true')
-    # common.add_argument('-g, --gff', help='Reference GFF3 annotation file.', action='store_true')
-    # common.add_argument('-o, --output', help='Output directory or file.', action='store_true')
-    # common.add_argument('-f', '--fasta', help='Reference genome FASTA file.', action='store_true')
-    # common.add_argument('-c', '--cds', help='Input CDS FILE.', action='store_true')
-    # common.add_argument('--flank', help='Upstream/downstream range (bp), default: 2000.', action='store_true')
 
     setup_cds_ann(subparsers)
     setup_intron_ann(subparsers)

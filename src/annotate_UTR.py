@@ -13,11 +13,11 @@ class UTRAnnotator:
         self.vcf_file = vcf_file
         self.vcf_dict = vcf_dict if vcf_dict is not None else {}
 
-        self.chrom_name = {}  # {gene_id: chrom}
-        self.mrna_by_gene = {}  # {gene: [(mrna, strand), ...]}
-        self.utr_by_mrna = {}  # {mrna: [(start, end, tag), ...]}
+        self.chrom_name = {}
+        self.mrna_by_gene = {}
+        self.utr_by_mrna = {}
         # self.vcf_dict = {}
-        self.annotated_snps = {}  # {(gene, mrna, tag): [snps]}
+        self.annotated_snps = {}
 
     def _parse_and_infer_utrs(self):
         logger.info("Preprocessing GFF...")
@@ -160,9 +160,10 @@ class UTRAnnotator:
     def write_output(self, output_file):
         logger.info(f"Starting to write result file: {output_file}")
         with open(output_file, 'w') as f:
+            f.write("#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\n")
             for (gene, mrna, tag), snps in self.annotated_snps.items():
                 for chrom, pos, ref, alt in snps:
-                    f.write(f"{gene}\t{mrna}\t{tag}\t{chrom}\t{pos}\t{ref}\t{alt}\n")
+                    f.write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{tag}\t{gene}\t{mrna}\n")
         
         total_results = sum(len(snps) for snps in self.annotated_snps.values())
         logger.info(f"Result writing completed | Saved {total_results} UTR variants to {output_file}")

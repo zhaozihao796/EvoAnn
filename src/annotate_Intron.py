@@ -164,9 +164,10 @@ class IntronAnnotator:
     def write_output(self, output_file):
         logger.info(f"Starting to write result file: {output_file}")
         with open(output_file, 'w') as f:
-            for (gene, mrna, intron), snps in self.annotated_snps.items():
+            f.write("#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\tINTRON_ID\n")
+            for (gene, mrna, intron, tag), snps in self.annotated_snps.items():
                 for chrom, pos, ref, alt in snps:
-                    f.write(f"{gene}\t{mrna}\t{intron}\t{chrom}\t{pos}\t{ref}\t{alt}\n")
+                    f.write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{tag}\t{gene}\t{mrna}\t{intron}\n")
         
         total_results = sum(len(snps) for snps in self.annotated_snps.values())
         logger.info(f"Result writing completed | Saved {total_results} intron SNPs to {output_file}")

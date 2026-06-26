@@ -13,10 +13,10 @@ class StreamAnnotator:
         self.flank = flank
         self.vcf_dict = vcf_dict if vcf_dict is not None else {}
 
-        self.chrom_name = {}  # {gene_id: chrom}
-        self.mrna_by_gene = {}  # {gene_id: [(mrna_id, start, end, strand), ...]}
+        self.chrom_name = {}
+        self.mrna_by_gene = {}
         # self.vcf_dict = {}
-        self.annotated_snps = {}  # {(gene, mrna, tag): [snps]}
+        self.annotated_snps = {}
 
     def _parse_gff(self):
         logger.info("Parsing GFF file...")
@@ -91,18 +91,18 @@ class StreamAnnotator:
                 down_e = end + self.flank
 
                 if strand == '+':
-                    range1_tag, range1_s, range1_e = 'upstream', up_s, up_e
-                    range2_tag, range2_s, range2_e = 'downstream', down_s, down_e
+                    range1_tag, range1_s, range1_e = 'upstream_gene_variant', up_s, up_e
+                    range2_tag, range2_s, range2_e = 'downstream_gene_variant', down_s, down_e
                 else:
-                    range1_tag, range1_s, range1_e = 'downstream', up_s, up_e
-                    range2_tag, range2_s, range2_e = 'upstream', down_s, down_e
+                    range1_tag, range1_s, range1_e = 'downstream_gene_variant', up_s, up_e
+                    range2_tag, range2_s, range2_e = 'upstream_gene_variant', down_s, down_e
 
                 while j < n_snps and vlist[j][0] < range1_s:
                     j += 1
 
                 curr = j
                 while curr < n_snps and vlist[curr][0] <= range1_e:
-                    self._add_snp(gene, mrna_id, range1_tag, vlist[curr], chrom)
+                    self._add_snp(gene, mrna_id, range1_tag, vlist[curr], chrom, start, end, strand)
                     total_hits += 1
                     curr += 1
 
@@ -111,7 +111,7 @@ class StreamAnnotator:
                     search_idx += 1
 
                 while search_idx < n_snps and vlist[search_idx][0] <= range2_e:
-                    self._add_snp(gene, mrna_id, range2_tag, vlist[search_idx], chrom)
+                    self._add_snp(gene, mrna_id, range2_tag, vlist[search_idx], chrom, start, end, strand)
                     total_hits += 1
                     search_idx += 1
 
@@ -119,19 +119,25 @@ class StreamAnnotator:
         sys.stdout.flush()
         logger.info(f"Annotation completed | Total hits {total_hits} sites")
 
-    def _add_snp(self, gene, mrna, tag, vcf_record, chrom):
+    def _add_snp(self, gene, mrna, tag, vcf_record, chrom, mrna_start, mrna_end, strand):
         pos, ref, alt = vcf_record
         alt_val = alt if isinstance(alt, str) else alt[0]
+        if strand == '+':
+            dist = (mrna_start - pos) if tag == 'upstream_gene_variant' else (pos - mrna_end)
+        else:
+            dist = (pos - mrna_end) if tag == 'upstream_gene_variant' else (mrna_start - pos)
+        dist = abs(dist)
         self.annotated_snps.setdefault((gene, mrna, tag), []).append(
-            (chrom, pos, ref, alt_val)
+            (chrom, pos, ref, alt_val, dist)
         )
 
     def write_output(self, output_file):
         logger.info(f"Starting to write result file: {output_file}")
         with open(output_file, 'w') as f:
+            f.write("#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\tDISTANCE\n")
             for (gene, mrna, tag), snps in self.annotated_snps.items():
-                for chrom, pos, ref, alt in snps:
-                    f.write(f"{gene}\t{mrna}\t{tag}\t{chrom}\t{pos}\t{ref}\t{alt}\n")
+                for chrom, pos, ref, alt, dist in snps:
+                    f.write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{tag}\t{gene}\t{mrna}\t{dist}\n")
         
         total_results = sum(len(snps) for snps in self.annotated_snps.values())
         logger.info(f"Result writing completed | Saved {total_results} upstream and downstream SNPs to {output_file}")

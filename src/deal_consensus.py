@@ -117,7 +117,7 @@ class MultiSampleConsensusExtractor:
                     gt = gts[i]
                     a1, a2 = gt[0], gt[1]
 
-                    if a1 == -1:
+                    if a1 == -1 or a2 == -1:
                         seq_chunk = 'N' * max_len
                     else:
                         if a1 == a2:
@@ -208,7 +208,7 @@ class MultiSampleConsensusExtractor:
                     gt = gts[i]
                     a1, a2 = gt[0], gt[1]
 
-                    if a1 == -1:
+                    if a1 == -1 or a2 == -1:
                         seq_chunk = 'N' * max_len
                     else:
                         if a1 == a2:

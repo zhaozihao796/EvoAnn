@@ -115,9 +115,9 @@ class IntergenicAnnotator:
                     'ref': ref,
                     'alt': alt,
                     'left_gene': left_gene['id'] if left_gene else '.',
-                    'left_end': str(left_gene['end']) if left_gene else '.',
+                    'left_dist': str(pos - left_gene['end']) if left_gene else '.',
                     'right_gene': right_gene['id'] if right_gene else '.',
-                    'right_start': str(right_gene['start']) if right_gene else '.'
+                    'right_dist': str(right_gene['start'] - pos) if right_gene else '.'
                 })
                 intergenic_snps += 1
                 
@@ -127,11 +127,11 @@ class IntergenicAnnotator:
     def write_output(self):
         logger.info(f"Writing results to {self.output_file}")
         with open(self.output_file, 'w') as f:
-            f.write("Chrom\tPos\tRef\tAlt\tLeft_Gene\tLeft_Gene_End\tRight_Gene\tRight_Gene_Start\n")
+            f.write("#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tLEFT_GENE\tDIST_LEFT\tRIGHT_GENE\tDIST_RIGHT\n")
             for res in self.results:
                 f.write(f"{res['chrom']}\t{res['pos']}\t{res['ref']}\t{res['alt']}\t"
-                        f"{res['left_gene']}\t{res['left_end']}\t"
-                        f"{res['right_gene']}\t{res['right_start']}\n")
+                        f"intergenic_variant\t{res['left_gene']}\t{res['left_dist']}\t"
+                        f"{res['right_gene']}\t{res['right_dist']}\n")
 
 def run(args):
     annotator = IntergenicAnnotator(args.gff, args.vcf, args.output)

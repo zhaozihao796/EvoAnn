@@ -96,7 +96,10 @@ def parse_vcf_all2(vcf_file):
     return vcf_dict
 
 def rev_comp(seq):
-    tr = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+    tr = str.maketrans(
+        "ACGTRYSWKMBDHVNacgtryswkmbdhvn",
+        "TGCAYRSWMKVHDBNtgcayrswmkvhdbn"
+    )
     return seq.translate(tr)[::-1]
 
 

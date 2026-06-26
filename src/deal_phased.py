@@ -137,7 +137,7 @@ class PhasedExtractor:
                     gt = gts[i]
                     idx1, idx2 = gt[0], gt[1]
 
-                    seq1 = all_alleles[idx1] if idx1 != -1 else 'N' * max_len # 缺失处理为N
+                    seq1 = all_alleles[idx1] if idx1 != -1 else 'N' * max_len
                     seq2 = all_alleles[idx2] if idx2 != -1 else 'N' * max_len
 
                     if len(seq1) < max_len:

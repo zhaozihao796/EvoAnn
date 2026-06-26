@@ -23,7 +23,7 @@ CODON2AA = {
     'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
     'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
 }
-START_CODONS = {'ATG', 'CTG', 'GTG', 'TTG', 'ATT', 'ATC', 'ATA'}
+START_CODONS = {'ATG', 'CTG', 'TTG'}
 STOP_CODONS = {'TAA', 'TAG', 'TGA'}
 
 
@@ -34,11 +34,11 @@ class CDSAnnotator:
         self.cds_file = cds_file
         self.vcf_dict = vcf_dict if vcf_dict is not None else {}
 
-        self.cds_by_gene = {}  # {gene: {mrna: [cds_tuple]}}
-        self.chrom_name = {}  # {gene: chrom}
+        self.cds_by_gene = {}
+        self.chrom_name = {}
         # self.vcf_dict = {}
-        self.transcripts = {}  # {(gene, mrna): seq}
-        self.nsmutation = {}  # {(gene, mrna): [mutations]}
+        self.transcripts = {}
+        self.nsmutation = {}
 
     def _parse_gff_structure(self):
         cds_by_mrna = {}
@@ -82,19 +82,20 @@ class CDSAnnotator:
         if any(x in c for x in ['N', '-', 'B', 'D', 'H', 'V']): return None
         return CODON2AA.get(c)
 
-    def _determine_variant_type(self, original, mutated, pos_in_transcript):
+    def _determine_variant_type(self, original, mutated, aa_pos, aa_ref, aa_alt):
         orig_U = original.upper()
         mut_U = mutated.upper()
 
-        if pos_in_transcript == 0:
+        if aa_pos == 1:
             if orig_U in START_CODONS and mut_U not in START_CODONS:
                 return 'start_lost'
+            elif orig_U == 'ATG' and mut_U != 'ATG':
+                return 'initiator_codon_variant'
 
-        orig_stop = orig_U in STOP_CODONS
-        mut_stop = mut_U in STOP_CODONS
-
-        if orig_stop and not mut_stop: return 'stop_lost'
-        if not orig_stop and mut_stop: return 'stop_gained'
+        if aa_ref == '*' and aa_alt != '*':
+            return 'stop_lost'
+        elif aa_ref != '*' and aa_alt == '*':
+            return 'stop_gained'
 
         return 'missense_variant'
 
@@ -212,7 +213,7 @@ class CDSAnnotator:
 
                                 if aa_ref and aa_alt and aa_ref != aa_alt:
                                     aa_pos = codon_start // 3 + 1
-                                    var_type = self._determine_variant_type(original_codon, mutated_codon, aa_pos - 1)
+                                    var_type = self._determine_variant_type(original_codon, mutated_codon, aa_pos, aa_ref, aa_alt)
                                     change_str = f"{aa_ref}{aa_pos}{aa_alt}"
 
                                     res_key = (gene, mrna_id) if mrna_id else gene
@@ -231,12 +232,18 @@ class CDSAnnotator:
     def write_output(self, output_file):
         logger.info(f"Starting to write result file: {output_file}")
         with open(output_file, 'w') as out:
+            out.write("#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE|MRNA\tAA_CHANGE\n")
             for k, muts in self.nsmutation.items():
-                gene = k[0] if isinstance(k, tuple) else k
+                if isinstance(k, tuple):
+                    gene, mrna_id = k
+                    gene_mrna = f"{gene}|{mrna_id}"
+                else:
+                    gene = k
+                    gene_mrna = gene
                 chrom = self.chrom_name.get(gene, "Unknown")
 
                 for pos, ref, alt, vtype, change in muts:
-                    out.write(f">{chrom}\t{pos}\t{ref}\t{alt}\t{vtype}\t{gene}\t{change}\n")
+                    out.write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{vtype}\t{gene_mrna}\t{change}\n")
 
         total_mutations = sum(len(m) for m in self.nsmutation.values())
         logger.info(f"Analysis completed | Found {total_mutations} non-synonymous mutation sites | Results saved to {output_file}")

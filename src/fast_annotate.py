@@ -143,6 +143,14 @@ class FastAnnotator:
         self.counts = defaultdict(int)
         self.total_processed_variants = 0
 
+        self.run_start_time = None
+        self.run_end_time = None
+        self.overlapped_genes = set()
+        self.overlapped_transcripts = set()
+        self.chrom_variant_counts = defaultdict(int)
+        self.chrom_pos_bins = defaultdict(lambda: defaultdict(int))
+        self.protein_pos_bins = defaultdict(int)
+
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -209,7 +217,6 @@ class FastAnnotator:
 
             t.build_structure(self.ref_genome[t.chrom])
 
-            # ---- Intron ----
             t.exons.sort(key=lambda x: x[0])
             merged_exons = []
             for es, ee in t.exons:
@@ -232,7 +239,6 @@ class FastAnnotator:
                             self.index.add_feature(t.chrom, intron_end - 1, intron_end, 'splice_donor', mid)
                             self.index.add_feature(t.chrom, intron_start, intron_start + 1, 'splice_acceptor', mid)
 
-            # ---- UTR ----
             for estart, eend in t.exons:
                 self.index.add_feature(t.chrom, estart, eend, 'exon_region', mid)
 
@@ -247,7 +253,8 @@ class FastAnnotator:
 
     def _open_output_files(self):
         files = {
-            'cds': 'cds_annotation.txt',
+            'cds': 'nonsynonymous_annotation.txt',
+            'syn': 'synonymous_annotation.txt',
             'intron': 'intron_annotation.txt',
             'utr': 'utr_annotation.txt',
             'stream': 'flank_annotation.txt',
@@ -256,10 +263,11 @@ class FastAnnotator:
 
         headers = {
             'cds': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE|MRNA\tAA_CHANGE\n",
-            'intron': "#CHROM\tPOS\tREF\tALT\tGENE\tMRNA\tFEATURE_ID\n",
-            'utr': "#CHROM\tPOS\tREF\tALT\tGENE\tMRNA\tUTR_TYPE\n",
-            'stream': "#CHROM\tPOS\tREF\tALT\tGENE\tMRNA\tSTREAM_TYPE\tDISTANCE\n",
-            'intergenic': "#CHROM\tPOS\tREF\tALT\tLEFT_GENE\tDIST_LEFT\tRIGHT_GENE\tDIST_RIGHT\n"
+            'syn': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE|MRNA\n",
+            'intron': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\tINTRON_ID\n",
+            'utr': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\n",
+            'stream': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tGENE\tMRNA\tDISTANCE\n",
+            'intergenic': "#CHROM\tPOS\tREF\tALT\tVARIANT_TYPE\tLEFT_GENE\tDIST_LEFT\tRIGHT_GENE\tDIST_RIGHT\n"
         }
 
         for k, v in files.items():
@@ -285,6 +293,7 @@ class FastAnnotator:
 
         opener = gzip.open if is_gzip(self.vcf_file) else open
 
+        self.run_start_time = time.strftime('%Y-%m-%d %H:%M:%S')
         t0 = time.time()
         processed = 0
 
@@ -315,12 +324,18 @@ class FastAnnotator:
                         continue
                     self._annotate_one_variant(chrom, pos, ref, alt_allele)
 
+                self.chrom_variant_counts[chrom] += 1
+                mb_bin = pos // 1_000_000
+                self.chrom_pos_bins[chrom][mb_bin] += 1
+
                 processed += 1
                 if processed % 100000 == 0:
                     sys.stdout.write(f"\rProcessed {processed} variants...")
                     sys.stdout.flush()
 
         self.total_processed_variants = processed
+        self.run_end_time = time.strftime('%Y-%m-%d %H:%M:%S')
+        self.run_time_seconds = int(time.time() - t0)
         sys.stdout.write("\n")
         self._close_output_files()
         logger.info(f"Finished processing {processed} variants in {time.time() - t0:.2f}s")
@@ -346,23 +361,21 @@ class FastAnnotator:
             elif ftype == 'intron':
                 intron_hits.append(data)
             elif ftype in ['upstream', 'downstream']:
-                stream_hits.append((ftype, data))
+                variant_tag = 'upstream_gene_variant' if ftype == 'upstream' else 'downstream_gene_variant'
+                stream_hits.append((variant_tag, data))
             elif ftype == 'splice_donor':
                 splice_donor_mrnas.add(data)
             elif ftype == 'splice_acceptor':
                 splice_acceptor_mrnas.add(data)
 
-        # Logic:
-        # If CDS hit -> Check NS/Syn. (It is also an exon hit, but CDS is more specific)
-        # If Exon hit but NOT CDS hit -> UTR.
-        # If Intron hit -> Intron.
-        # If Stream hit -> Stream.
-        # If NO hit -> Intergenic.
 
         # CDS Annotation
         if cds_hits:
             # is_intergenic = False
             for mrna_id in cds_hits:
+                t = self.index.transcripts[mrna_id]
+                self.overlapped_genes.add(t.gene_id)
+                self.overlapped_transcripts.add(mrna_id)
                 self._analyze_cds_variant(chrom, pos, ref, alt, mrna_id)
                 hit_types.add('cds')
 
@@ -371,10 +384,10 @@ class FastAnnotator:
             # is_intergenic = False
             for mrna_id in exon_hits:
                 if mrna_id in cds_hits:
-                    continue  # already handled as CDS for this mRNA
+                    continue
                 t = self.index.transcripts[mrna_id]
                 if t._cds_min is None:
-                    continue  # non-coding transcript, skip
+                    continue
 
                 if t.strand == '+':
                     if pos < t._cds_min:
@@ -391,17 +404,21 @@ class FastAnnotator:
                     else:
                         continue
 
+                self.overlapped_genes.add(t.gene_id)
+                self.overlapped_transcripts.add(mrna_id)
                 self.handles['utr'].write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{tag}\t{t.gene_id}\t{mrna_id}\n")
                 self.counts['UTR'] += 1
-                self.counts['tag'] += 1
+                self.counts[tag] += 1
                 hit_types.add('utr')
 
         # Intron Annotation
         if intron_hits:
             # is_intergenic = False
-            for mid, intron_name in intron_hits:  # data is now (mrna_id, intron_name) tuple
+            for mid, intron_name in intron_hits:
                 t = self.index.transcripts.get(mid)
                 if t:
+                    self.overlapped_genes.add(t.gene_id)
+                    self.overlapped_transcripts.add(mid)
                     tag = 'intron_variant'
                     if mid in splice_donor_mrnas:
                         tag = 'splice_donor_variant'
@@ -422,9 +439,9 @@ class FastAnnotator:
                 t = self.index.transcripts.get(mrna_id)
                 if not t: continue
                 if t.strand == '+':
-                    dist = (t.start - pos) if tag == 'upstream' else (pos - t.end)
+                    dist = (t.start - pos) if tag == 'upstream_gene_variant' else (pos - t.end)
                 else:
-                    dist = (pos - t.end) if tag == 'upstream' else (t.start - pos)
+                    dist = (pos - t.end) if tag == 'upstream_gene_variant' else (t.start - pos)
                 dist = abs(dist)
                 self.handles['stream'].write(f"{chrom}\t{pos}\t{ref}\t{alt}\t{tag}\t{gid}\t{mrna_id}\t{dist}\n")
                 self.counts['Upstream/Downstream'] += 1
@@ -479,8 +496,8 @@ class FastAnnotator:
                     mut_U = mutated_codon.upper()
                     if orig_U in START_CODONS and mut_U not in START_CODONS:
                         vtype = 'start_lost'
-                    if orig_U in START_CODONS and mut_U in START_CODONS:
-                        aa_alt = aa_ref
+                    elif orig_U == 'ATG' and mut_U != 'ATG':
+                        vtype = 'initiator_codon_variant'
 
                 if not vtype and aa_ref != aa_alt:
                     vtype = 'missense_variant'
@@ -497,7 +514,20 @@ class FastAnnotator:
                     self.counts['CDS Non-synonymous'] += 1
                     self.counts[vtype] += 1
                 else:
+                    vtype = 'synonymous_variant'
+                    if aa_ref == '*':
+                        vtype = 'stop_retained_variant'
+                    self.handles['syn'].write(
+                        f"{chrom}\t{pos}\t{ref}\t{alt}\t{vtype}\t{t.gene_id}|{mrna_id}\n"
+                    )
                     self.counts['CDS Synonymous'] += 1
+                    self.counts[vtype] += 1
+
+                if aa_ref and aa_alt and t.cds_seq:
+                    total_aa = len(t.cds_seq) // 3
+                    if total_aa > 0:
+                        pct_bin = min(int(aa_pos / total_aa * 10), 9)
+                        self.protein_pos_bins[pct_bin] += 1
 
         except Exception as e:
             logger.error(f"Error analyzing CDS variant at {chrom}:{pos} for {mrna_id}: {e}")
@@ -560,53 +590,60 @@ class FastAnnotator:
             right_dist = str(right_start - pos)
 
         self.handles['intergenic'].write(
-            f"{chrom}\t{pos}\t{ref}\t{alt}\t{left_gene}\t{left_dist}\t{right_gene}\t{right_dist}\n"
+            f"{chrom}\t{pos}\t{ref}\t{alt}\tintergenic_variant\t{left_gene}\t{left_dist}\t{right_gene}\t{right_dist}\n"
         )
         return True
 
     def generate_report(self):
         import time
         import os
+        from . import __version__
         html_file = os.path.join(self.output_dir, "fast_annotation_summary.html")
 
         total_snps = self.total_processed_variants
 
-        categories = ['CDS Non-synonymous', 'Intron_Total', 'UTR', 'Upstream/Downstream', 'Intergenic',
+        chart_labels = ['CDS Non-synonymous', 'Intronic', 'UTR', 'Upstream/Downstream', 'Intergenic',
                       'CDS Synonymous', 'Splice Donor', 'Splice Acceptor']
-        counts = [self.counts.get(c, 0) for c in categories]
+        data_keys = ['CDS Non-synonymous', 'Intron_Total', 'UTR', 'Upstream/Downstream', 'Intergenic',
+                      'CDS Synonymous', 'Splice Donor', 'Splice Acceptor']
+        counts = [self.counts.get(c, 0) for c in data_keys]
         chart_colors = [
-            '#ff6384',  # CDS Non-syn (Red)
-            '#ff9f40',  # CDS Syn (Orange)
-            '#d9534f',  # Splice Donor (Dark Red)
-            '#c92a2a',  # Splice Acceptor (Deeper Red)
-            '#36a2eb',  # Intron (Blue)
-            '#ffce56',  # UTR (Yellow)
-            '#4bc0c0',  # Stream (Teal)
-            '#9966ff'  # Intergenic (Purple)
+            '#ff6384',
+            '#ff9f40',
+            '#d9534f',
+            '#c92a2a',
+            '#36a2eb',
+            '#ffce56',
+            '#4bc0c0',
+            '#9966ff'
         ]
 
         hierarchy = [
             ("1. CDS Non-synonymous", "CDS Non-synonymous", [
-                ("1.1 Missense Variant", "missense_variant"),
-                ("1.2 Start Lost", "start_lost"),
-                ("1.3 Stop Gained", "stop_gained"),
-                ("1.4 Stop Lost", "stop_lost")
+                ("1.1 Missense variant", "missense_variant"),
+                ("1.2 Start lost", "start_lost"),
+                ("1.3 Stop gained", "stop_gained"),
+                ("1.4 Stop lost", "stop_lost"),
+                ("1.5 Initiator codon variant", "initiator_codon_variant")
             ]),
-            ("2. CDS Synonymous", "CDS Synonymous", []),
+            ("2. CDS Synonymous", "CDS Synonymous", [
+                ("2.1 Synonymous variant", "synonymous_variant"),
+                ("2.2 Stop retained variant", "stop_retained_variant"),
+            ]),
             ("3. Intronic Region", "Intron_Total", [
-                ("3.1 Intron Variant", "intron_variant"),
-                ("3.2 Splice Donor", "Splice Donor"),
-                ("3.3 Splice Acceptor", "Splice Acceptor")
+                ("3.1 Intron variant", "intron_variant"),
+                ("3.2 Splice donor", "Splice Donor"),
+                ("3.3 Splice acceptor", "Splice Acceptor")
             ]),
             ("4. UTR Region", "UTR", [
-                ("4.1 5' UTR Variant", "5_prime_UTR_variant"),
-                ("4.2 3' UTR Variant", "3_prime_UTR_variant")
+                ("4.1 5' UTR variant", "5_prime_UTR_variant"),
+                ("4.2 3' UTR variant", "3_prime_UTR_variant")
             ]),
             ("5. Upstream and Downstream", "Upstream/Downstream", [
-                ("5.1 Upstream", "upstream"),
-                ("5.2 Downstream", "downstream")
+                ("5.1 Upstream gene variant", "upstream_gene_variant"),
+                ("5.2 Downstream gene variant", "downstream_gene_variant")
             ]),
-            ("6. Intergenic Region", "Intergenic", [])
+            ("6. Intergenic region", "Intergenic", [])
         ]
 
         table_rows = ""
@@ -636,6 +673,205 @@ class FastAnnotator:
                     </tr>
                     """
 
+        run_time_str = f"{self.run_time_seconds}s"
+        if self.run_time_seconds >= 60:
+            m, s = divmod(self.run_time_seconds, 60)
+            run_time_str = f"{m}m {s}s"
+            if m >= 60:
+                h, m = divmod(m, 60)
+                run_time_str = f"{h}h {m}m {s}s"
+
+        run_stats_html = f"""
+            <div class="card" id="sec-run-stats">
+                <h2>Run Statistics</h2>
+                <table class="info-table">
+                    <tr><td>EvoAnn Version</td><td>{__version__}</td></tr>
+                    <tr><td>Input VCF</td><td><code>{os.path.basename(self.vcf_file)}</code></td></tr>
+                    <tr><td>Reference Genome</td><td><code>{os.path.basename(self.fasta_file)}</code></td></tr>
+                    <tr><td>GFF Annotation</td><td><code>{os.path.basename(self.gff_file)}</code></td></tr>
+                    <tr><td>Output Directory</td><td><code>{os.path.basename(self.output_dir.rstrip(os.sep))}</code></td></tr>
+                    <tr><td>Flank Distance</td><td>{self.flank:,} bp</td></tr>
+                    <tr><td>Start Time</td><td>{self.run_start_time}</td></tr>
+                    <tr><td>End Time</td><td>{self.run_end_time}</td></tr>
+                    <tr><td>Run Time</td><td>{run_time_str}</td></tr>
+                </table>
+            </div>
+        """
+
+        sorted_chroms = sorted(self.chrom_variant_counts.keys(),
+                               key=lambda c: (0, int(c)) if c.isdigit() else (1, c))
+        chrom_labels = [str(c) for c in sorted_chroms]
+        chrom_counts_list = [self.chrom_variant_counts[c] for c in sorted_chroms]
+
+        chrom_table_rows = ""
+        for c in sorted_chroms:
+            chrom_table_rows += f"<tr><td>{c}</td><td>{self.chrom_variant_counts[c]:,}</td></tr>\n"
+
+        chrom_bar_html = f"""
+            <div class="charts-row" id="sec-chrom">
+                <div class="card">
+                    <h2>Variants by Chromosome</h2>
+                    <div class="chart-wrapper">
+                        <canvas id="chromBarChart"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Chromosome Counts</h2>
+                    <div class="table-responsive">
+                        <table>
+                            <thead><tr><th>Chromosome</th><th>Count</th></tr></thead>
+                            <tbody>{chrom_table_rows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        """
+
+        chrom_dist_html = '<div id="sec-chrom-dist">\n'
+        chrom_dist_js = ""
+        for idx, chrom in enumerate(sorted_chroms):
+            bins = self.chrom_pos_bins[chrom]
+            if not bins:
+                continue
+            max_bin = max(bins.keys())
+            labels = [str(b) for b in range(max_bin + 1)]
+            data = [bins.get(b, 0) for b in range(max_bin + 1)]
+            canvas_id = f"chromDist_{idx}"
+
+            chrom_dist_html += f"""
+            <div class="card">
+                <h2>Distribution of variants on chromosome {chrom}</h2>
+                <div class="chart-wrapper" style="height:250px;">
+                    <canvas id="{canvas_id}"></canvas>
+                </div>
+            </div>
+            """
+
+            chrom_dist_js += f"""
+            new Chart(document.getElementById('{canvas_id}').getContext('2d'), {{
+                type: 'line',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        data: {data},
+                        borderColor: '#2a5298',
+                        backgroundColor: 'rgba(42,82,152,0.15)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 1.5
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ legend: {{ display: false }} }},
+                    scales: {{
+                        x: {{ title: {{ display: true, text: 'Position (Mb)' }}, ticks: {{ maxTicksLimit: 20, font: {{ size: 10 }} }} }},
+                        y: {{ title: {{ display: true, text: 'Variant Count' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+            """
+        chrom_dist_html += '</div>\n'
+
+        coding_types = [
+            ('Missense Variant', 'missense_variant', '#ffd700'),
+            ('Stop Gained', 'stop_gained', '#ff0000'),
+            ('Stop Lost', 'stop_lost', '#ff4500'),
+            ('Start Lost', 'start_lost', '#ff7f50'),
+            ('Initiator Codon Variant', 'initiator_codon_variant', '#ff69b4'),
+            ('Synonymous Variant', 'synonymous_variant', '#76ee00'),
+            ('Stop Retained Variant', 'stop_retained_variant', '#66cdaa'),
+        ]
+        coding_labels = []
+        coding_data = []
+        coding_colors = []
+        coding_table_rows = ""
+        total_coding = sum(self.counts.get(k, 0) for _, k, _ in coding_types)
+        for label, key, color in coding_types:
+            c = self.counts.get(key, 0)
+            if c > 0:
+                coding_labels.append(label)
+                coding_data.append(c)
+                coding_colors.append(color)
+                pct = (c / total_coding * 100) if total_coding > 0 else 0
+                coding_table_rows += f"<tr><td>{label}</td><td>{c:,}</td><td>{pct:.2f}%</td></tr>\n"
+
+        coding_html = f"""
+            <div class="charts-row" id="sec-coding">
+                <div class="card">
+                    <h2>Coding Consequences</h2>
+                    <div class="chart-wrapper">
+                        <canvas id="codingPieChart"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Coding Consequence Counts</h2>
+                    <div class="table-responsive">
+                        <table>
+                            <thead><tr><th>Consequence Type</th><th>Count</th><th>Percentage</th></tr></thead>
+                            <tbody>{coding_table_rows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        """
+
+        protein_labels = [f"{i*10}-{(i+1)*10}%" for i in range(10)]
+        protein_data = [self.protein_pos_bins.get(i, 0) for i in range(10)]
+        has_protein_data = any(v > 0 for v in protein_data)
+
+        protein_html = ""
+        protein_js = ""
+        if has_protein_data:
+            protein_html = f"""
+            <div class="card" id="sec-protein">
+                <h2>Position in Protein</h2>
+                <div class="chart-wrapper" style="height:300px;">
+                    <canvas id="proteinBarChart"></canvas>
+                </div>
+            </div>
+            """
+            protein_js = f"""
+            new Chart(document.getElementById('proteinBarChart').getContext('2d'), {{
+                type: 'bar',
+                data: {{
+                    labels: {protein_labels},
+                    datasets: [{{
+                        label: 'Variant Count',
+                        data: {protein_data},
+                        backgroundColor: 'rgba(42,82,152,0.7)',
+                        borderColor: '#2a5298',
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ legend: {{ display: false }} }},
+                    scales: {{
+                        x: {{ title: {{ display: true, text: 'Position in protein (percentile)' }} }},
+                        y: {{ title: {{ display: true, text: 'Count' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+            """
+
+        nav_items = [
+            ('#sec-run-stats', 'Run Statistics'),
+            ('#sec-overview', 'Overview'),
+            ('#sec-region', 'Distribution by Region'),
+            ('#sec-chrom', 'Variants by Chromosome'),
+            ('#sec-chrom-dist', 'Chromosome Distribution'),
+            ('#sec-coding', 'Coding Consequences'),
+        ]
+        if has_protein_data:
+            nav_items.append(('#sec-protein', 'Position in Protein'))
+        nav_items.append(('#sec-output', 'Output Files'))
+
+        nav_links = "".join(f'<a href="{href}">{label}</a>' for href, label in nav_items)
+
         html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -651,17 +887,42 @@ class FastAnnotator:
             .header h1 {{ margin: 0; font-size: 2.5em; }}
             .header p {{ opacity: 0.8; margin-top: 10px; }}
 
-            .container {{ max-width: 1200px; margin: -30px auto 40px; padding: 0 20px; }}
+            /* --- Sticky Navigation Bar --- */
+            .sticky-nav {{
+                position: sticky; top: 0; z-index: 100;
+                background: rgba(255,255,255,0.95);
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                padding: 0 20px;
+                display: flex; justify-content: center; flex-wrap: wrap; gap: 0;
+            }}
+            .sticky-nav a {{
+                color: #2a5298; text-decoration: none; font-size: 0.85em; font-weight: 500;
+                padding: 12px 16px; display: inline-block;
+                border-bottom: 2px solid transparent; transition: all 0.2s ease;
+            }}
+            .sticky-nav a:hover {{
+                background-color: rgba(42,82,152,0.06);
+                border-bottom-color: #2a5298;
+                text-decoration: none;
+            }}
+
+            .container {{ max-width: 1200px; margin: 20px auto 40px; padding: 0 20px; }}
+
+            /* Offset anchors for sticky nav */
+            [id^="sec-"] {{ scroll-margin-top: 60px; }}
 
             .card {{ background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); padding: 25px; margin-bottom: 25px; display: flex; flex-direction: column; }}
             .card h2 {{ border-bottom: 2px solid #f0f0f0; padding-bottom: 10px; margin-top: 0; color: #2c3e50; font-size: 1.2em; flex-shrink: 0; }}
 
-            .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center; }}
+            .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; text-align: center; }}
             .stat-box {{ padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; }}
             .stat-value {{ font-size: 2em; font-weight: 700; color: #2a5298; }}
             .stat-label {{ color: #6c757d; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; margin-top: 5px; }}
 
             .charts-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; }}
+            .charts-row > .card {{ min-width: 0; overflow: hidden; }}
             @media (max-width: 900px) {{ .charts-row {{ grid-template-columns: 1fr; }} }}
 
             .chart-wrapper {{ position: relative; height: 400px; width: 100%; flex-grow: 1; margin-top: 10px; }}
@@ -674,6 +935,12 @@ class FastAnnotator:
             table th:nth-child(2), table td:nth-child(2),
             table th:nth-child(3), table td:nth-child(3) {{ white-space: nowrap; }}
             table th:nth-child(1), table td:nth-child(1) {{ min-width: 200px; }}
+
+            /* Info table for Run Statistics */
+            .info-table {{ width: 100%; }}
+            .info-table td:first-child {{ font-weight: 500; color: #495057; width: 200px; white-space: nowrap; }}
+            .info-table td:last-child {{ color: #333; }}
+            .info-table code {{ background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
 
             .main-row {{ background-color: #ffffff; transition: background 0.2s; }}
             .main-row:hover {{ background-color: #f8f9fa; }}
@@ -691,6 +958,9 @@ class FastAnnotator:
             .footer {{ text-align: center; color: #adb5bd; margin-top: 20px; padding-bottom: 40px; }}
             a {{ color: #2a5298; text-decoration: none; font-weight: 500; }}
             a:hover {{ text-decoration: underline; }}
+
+            /* Smooth scrolling */
+            html {{ scroll-behavior: smooth; }}
         </style>
     </head>
     <body>
@@ -700,9 +970,13 @@ class FastAnnotator:
             <p>Generated on {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
         </div>
 
+        <nav class="sticky-nav">{nav_links}</nav>
+
         <div class="container">
 
-            <div class="card">
+            {run_stats_html}
+
+            <div class="card" id="sec-overview">
                 <h2>Overview</h2>
                 <div class="summary-grid">
                     <div class="stat-box">
@@ -717,10 +991,18 @@ class FastAnnotator:
                         <div class="stat-value">{len(self.index.chrom_genes):,}</div>
                         <div class="stat-label">Chromosomes</div>
                     </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{len(self.overlapped_genes):,}</div>
+                        <div class="stat-label">Overlapped Genes</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{len(self.overlapped_transcripts):,}</div>
+                        <div class="stat-label">Overlapped Transcripts</div>
+                    </div>
                 </div>
             </div>
 
-            <div class="charts-row">
+            <div class="charts-row" id="sec-region">
                 <div class="card">
                     <h2>Distribution by Region</h2>
                     <div class="chart-wrapper">
@@ -728,7 +1010,7 @@ class FastAnnotator:
                     </div>
                 </div>
                 <div class="card">
-                    <h2>Number of annotaitons and region counts</h2>
+                    <h2>Number of annotations and region counts</h2>
                     <div class="table-responsive">
                         <table>
                             <thead>
@@ -742,10 +1024,19 @@ class FastAnnotator:
                 </div>
             </div>
 
-            <div class="card" style="display: block;">
+            {chrom_bar_html}
+
+            {chrom_dist_html}
+
+            {coding_html}
+
+            {protein_html}
+
+            <div class="card" style="display: block;" id="sec-output">
                 <h2>Output Files</h2>
                 <ul style="list-style-type: none; padding: 0;">
-                    <li style="margin-bottom: 10px;">📄 <a href="cds_annotation.txt" download>CDS Annotation (Non-synonymous)</a> - <span style="color:#666">Detailed list of protein-altering variants</span></li>
+                    <li style="margin-bottom: 10px;">📄 <a href="nonsynonymous_annotation.txt" download>CDS Annotation (Non-synonymous)</a> - <span style="color:#666">Detailed list of protein-altering variants</span></li>
+                    <li style="margin-bottom: 10px;">📄 <a href="synonymous_annotation.txt" download>CDS Annotation (Synonymous)</a></li>
                     <li style="margin-bottom: 10px;">📄 <a href="intron_annotation.txt" download>Intron Annotation</a></li>
                     <li style="margin-bottom: 10px;">📄 <a href="utr_annotation.txt" download>UTR Annotation</a></li>
                     <li style="margin-bottom: 10px;">📄 <a href="flank_annotation.txt" download>Upstream/Downstream Annotation</a></li>
@@ -756,15 +1047,16 @@ class FastAnnotator:
         </div>
 
         <div class="footer">
-            Powered by <strong>Evoann</strong> | An ultra-fast variant annotation toolkit
+            Powered by <strong>EvoAnn v{__version__}</strong> | An ultra-fast variant annotation toolkit
         </div>
 
         <script>
+            // --- Distribution by Region (original doughnut) ---
             const ctx = document.getElementById('regionChart').getContext('2d');
             new Chart(ctx, {{
                 type: 'doughnut',
                 data: {{
-                    labels: {categories},
+                    labels: {chart_labels},
                     datasets: [{{
                         data: {counts},
                         backgroundColor: {chart_colors},
@@ -783,6 +1075,60 @@ class FastAnnotator:
                     layout: {{ padding: 10 }}
                 }}
             }});
+
+            // --- Variants by Chromosome (bar chart) ---
+            new Chart(document.getElementById('chromBarChart').getContext('2d'), {{
+                type: 'bar',
+                data: {{
+                    labels: {chrom_labels},
+                    datasets: [{{
+                        label: 'Variant Count',
+                        data: {chrom_counts_list},
+                        backgroundColor: 'rgba(42,82,152,0.7)',
+                        borderColor: '#2a5298',
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ legend: {{ display: false }} }},
+                    scales: {{
+                        x: {{ title: {{ display: true, text: 'Chromosome' }} }},
+                        y: {{ title: {{ display: true, text: 'Count' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+
+            // --- Distribution on each Chromosome (area / line charts) ---
+            {chrom_dist_js}
+
+            // --- Coding Consequences (pie chart) ---
+            new Chart(document.getElementById('codingPieChart').getContext('2d'), {{
+                type: 'doughnut',
+                data: {{
+                    labels: {coding_labels},
+                    datasets: [{{
+                        data: {coding_data},
+                        backgroundColor: {coding_colors},
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{
+                            position: 'right',
+                            labels: {{ boxWidth: 12, font: {{size: 11}} }}
+                        }}
+                    }},
+                    layout: {{ padding: 10 }}
+                }}
+            }});
+
+            // --- Position in Protein (bar chart) ---
+            {protein_js}
         </script>
     </body>
     </html>
